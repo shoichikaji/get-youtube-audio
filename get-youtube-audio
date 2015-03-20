@@ -1,0 +1,89 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use utf8;
+use Capture::Tiny 'capture_merged';
+use File::Copy 'copy';
+use File::Temp 'tempdir';
+use File::Which 'which';
+use Getopt::Long qw(:config no_auto_abbrev no_ignore_case);
+use LWP::Protocol::https;
+use List::Util 'first';
+use Pod::Usage 'pod2usage';
+use WWW::YouTube::Download;
+
+GetOptions
+    "f|fmt=s"      => \(my $prefer_fmt = "22,37,18"),
+    "h|help"       => sub { pod2usage(0) },
+    "q|quiet"      => \(my $quiet),
+or pod2usage(1);
+
+sub usage { warn "@_\n" if @_; pod2usage(1) }
+sub warnf { return if $quiet; warn "@_\n"   }
+
+my $video_id = shift or usage "Missing video id";
+if ($video_id =~ m{https?://www.youtube.com/watch\?v=([^&]+)}) {
+    $video_id = $1;
+} elsif ($video_id =~ m{https?://youtu.be/([^&]+)}) {
+    $video_id = $1;
+}
+if (my (@exist) = grep { -f "$video_id.$_" } qw(m4a mp4)) {
+    die "Already exists @exist";
+}
+
+my $ffmpeg = which "ffmpeg" or usage "Missing ffmpeg command";
+my $mp4box = which "MP4Box" or usage "Missing MP4Box command";
+
+my $client = WWW::YouTube::Download->new;
+my %fmt    = map { $_ => 1 } @{ $client->get_fmt_list($video_id) || [] };
+die "Cannot find video $video_id\n" if !%fmt;
+my @prefer = split /,/, $prefer_fmt;
+my $fmt = first { $fmt{$_} } @prefer
+    or die "Cannot find proper format type of video $video_id\n";
+
+my $tempdir = tempdir CLEANUP => 1;
+warnf "Downloading $video_id.mp4 (fmt $fmt)";
+$client->download($video_id, {
+    fmt      => $fmt,
+    filename => "$tempdir/$video_id.mp4",
+    verbose  => !$quiet,
+});
+die "Failed to download video\n" unless -f "$tempdir/$video_id.mp4";
+
+my ($merged, $exit);
+($merged, $exit) = capture_merged {
+    system $ffmpeg, "-i", "$tempdir/$video_id.mp4",
+        qw(-vn -acodec copy -y), "$tempdir/$video_id.aac";
+};
+if (!-f "$tempdir/$video_id.aac" || $exit != 0) {
+    warn "Failed ffmpeg:\n";
+    warn "   $_\n" for split /\n/, $merged;
+    exit 255;
+}
+
+($merged, $exit) = capture_merged {
+    system $mp4box, "-add", "$tempdir/$video_id.aac",
+        "-new", "$tempdir/$video_id.m4a";
+};
+if (!-f "$tempdir/$video_id.m4a" || $exit != 0) {
+    warn "Failed MP4Box:\n";
+    warn "    $_\n" for split /\n/, $merged;
+    exit 255;
+}
+
+copy "$tempdir/$video_id.mp4", "$video_id.mp4";
+copy "$tempdir/$video_id.m4a", "$video_id.m4a";
+warnf "Successfully get $video_id.mp4 and $video_id.m4a";
+
+__END__
+
+=head1 SYNOPSIS
+
+    > get-youtube-audio VIDEO_ID
+
+    Options:
+    -f, --fmt FMT_LIST     prefer fmt list, Default: 22,37,18
+    -h, --help             show this help
+    -q, --quiet            be quiet
+
+=cut
