@@ -36,4 +36,6 @@ Ubuntu 14.04:
     > sudo apt-get dist-upgrade
     > sudo apt-get install ffmpeg
     # install mp4box
-    > apt-get install -y gpac
+    > sudo apt-get install -y gpac
+
+See [Dockerfile](Dockerfile)
